@@ -1,13 +1,17 @@
-# Core data science / ML
-pandas>=1.5.0
-numpy>=1.23.0
-scikit-learn>=1.1.0
-xgboost>=1.7.0
-joblib>=1.2.0
-matplotlib>=3.6.0
-seaborn>=0.12.0
+# Core web framework
+fastapi>=0.110.0
 
-# FastAPI backend
-fastapi>=0.100.0
-uvicorn[standard]>=0.22.0
+# ASGI server
+uvicorn[standard]>=0.29.0
+
+# Data science & ML
+pandas>=2.0.0
+numpy>=1.26.0
+scikit-learn>=1.4.0
+xgboost>=2.0.0
+joblib>=1.3.0
+matplotlib>=3.8.0
+seaborn>=0.13.0
+
+# Input validation (bundled with FastAPI, listed explicitly for clarity)
 pydantic>=2.0.0
