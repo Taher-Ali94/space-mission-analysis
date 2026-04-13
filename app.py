@@ -2,8 +2,10 @@
 FastAPI Backend – Space Mission Success Prediction
 
 Endpoints:
-  GET  /         → API health / status
-  POST /predict  → accepts mission parameters, returns predicted success %
+  GET  /             → API health / status
+  POST /predict      → accepts mission parameters, returns predicted success %
+  GET  /data/kpis    → KPI summaries derived from the cleaned CSV dataset
+  GET  /data/charts  → Chart-ready datasets derived from the cleaned CSV dataset
 
 Run locally:
   uvicorn app:app --reload
@@ -25,6 +27,7 @@ from pydantic import BaseModel, Field
 
 MODEL_PATH = os.getenv("MODEL_PATH", "best_model.pkl")
 SCALER_PATH = os.getenv("SCALER_PATH", "scaler.pkl")
+CSV_PATH = os.getenv("CSV_PATH", "cleaned_space_missions.csv")
 
 # Comma-separated list of allowed CORS origins.
 # Default to "*" for development; override in production.
@@ -43,6 +46,48 @@ FEATURE_ORDER = [
     "Distance from Earth (light-years)",
 ]
 
+# CSV column names used by the data endpoints
+COL_SUCCESS = "Mission Success (%)"
+COL_COST = "Mission Cost (billion USD)"
+COL_YIELD = "Scientific Yield (points)"  # optional – falls back to COL_SUCCESS
+COL_VEHICLE = "Launch Vehicle"
+COL_MISSION_TYPE = "Mission Type"
+
+
+def _load_csv(path: str) -> pd.DataFrame:
+    """Load and minimally preprocess the cleaned space-missions CSV.
+
+    Parsing is kept lightweight:
+    * Numeric columns: missing values filled with the column median.
+    * Categorical columns: missing values filled with the column mode.
+    * The CSV already contains a pre-computed ``Year`` integer column;
+      no date parsing is required.
+
+    Returns an empty DataFrame if the file is missing or unreadable.
+    """
+    if not os.path.exists(path):
+        print(f"[warn] CSV file '{path}' not found – data endpoints will return empty results.")
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_csv(path)
+    except Exception as exc:
+        print(f"[warn] Could not read CSV '{path}': {exc}")
+        return pd.DataFrame()
+
+    # Fill missing numerics with median
+    for col in df.select_dtypes(include=[np.number]).columns:
+        df[col] = df[col].fillna(df[col].median())
+
+    # Fill missing categoricals with mode
+    for col in df.select_dtypes(include=["object"]).columns:
+        mode_vals = df[col].mode()
+        if not mode_vals.empty:
+            df[col] = df[col].fillna(mode_vals[0])
+
+    print(f"CSV loaded from '{path}': {df.shape[0]} rows, {df.shape[1]} columns")
+    return df
+
 # ─────────────────────────────────────────────
 # APPLICATION STATE
 # ─────────────────────────────────────────────
@@ -52,7 +97,7 @@ app_state: dict = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load the model and scaler once at startup."""
+    """Load the model, scaler, and CSV dataset once at startup."""
     if not os.path.exists(MODEL_PATH):
         raise RuntimeError(
             f"Model file '{MODEL_PATH}' not found. "
@@ -66,6 +111,9 @@ async def lifespan(app: FastAPI):
         app_state["scaler"] = joblib.load(SCALER_PATH)
     else:
         app_state["scaler"] = None
+
+    # CSV is optional – data endpoints degrade gracefully when absent
+    app_state["df"] = _load_csv(CSV_PATH)
 
     print(f"Model loaded from '{MODEL_PATH}'")
     yield
@@ -142,6 +190,64 @@ class StatusResponse(BaseModel):
     message: str
 
 
+class KPIResponse(BaseModel):
+    """KPI summary computed from the cleaned CSV dataset."""
+
+    total_missions: int = Field(..., description="Total number of missions in the dataset")
+    avg_success_rate: float | None = Field(
+        None, description="Average mission success rate (%)"
+    )
+    avg_mission_cost: float | None = Field(
+        None, description="Average mission cost (billion USD)"
+    )
+    avg_scientific_yield: float | None = Field(
+        None, description="Average scientific yield (points). Falls back to avg_success_rate when Scientific Yield (points) column is absent."
+    )
+
+
+class MissionsOverTimePoint(BaseModel):
+    year: int
+    missions: int
+
+
+class LaunchVehiclePoint(BaseModel):
+    vehicle: str
+    launches: int
+
+
+class MissionTypePoint(BaseModel):
+    name: str
+    value: int
+
+
+class CostYieldPoint(BaseModel):
+    cost: float
+    yield_: float = Field(..., alias="yield")
+
+    model_config = {"populate_by_name": True}
+
+
+class ChartsResponse(BaseModel):
+    """Chart-ready datasets derived from the cleaned CSV."""
+
+    missions_over_time: list[MissionsOverTimePoint] = Field(
+        default_factory=list,
+        description="Number of missions launched per year",
+    )
+    top_launch_vehicles: list[LaunchVehiclePoint] = Field(
+        default_factory=list,
+        description="Top 5 launch vehicles by number of launches",
+    )
+    mission_type_distribution: list[MissionTypePoint] = Field(
+        default_factory=list,
+        description="Mission count broken down by mission type",
+    )
+    cost_vs_yield: list[CostYieldPoint] = Field(
+        default_factory=list,
+        description="Scatter data: mission cost (B USD) vs scientific yield / success (%)",
+    )
+
+
 # ─────────────────────────────────────────────
 # ENDPOINTS
 # ─────────────────────────────────────────────
@@ -198,3 +304,129 @@ def predict(payload: MissionInput) -> PredictionResponse:
     prediction = max(0.0, min(100.0, prediction))
 
     return PredictionResponse(predicted_success_percent=round(prediction, 2))
+
+
+@app.get(
+    "/data/kpis",
+    response_model=KPIResponse,
+    summary="KPI summaries from the CSV dataset",
+)
+def get_kpis() -> KPIResponse:
+    """
+    Return high-level KPI values computed from the cleaned CSV dataset:
+
+    * **total_missions** – row count.
+    * **avg_success_rate** – mean of ``Mission Success (%)``.
+    * **avg_mission_cost** – mean of ``Mission Cost (billion USD)``.
+    * **avg_scientific_yield** – mean of ``Scientific Yield (points)``; falls back to
+      ``Mission Success (%)`` when that column is absent.
+    """
+    df: pd.DataFrame = app_state.get("df", pd.DataFrame())
+
+    if df.empty:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Dataset not available. "
+                f"Ensure '{CSV_PATH}' exists and is readable."
+            ),
+        )
+
+    total_missions: int = len(df)
+
+    def _safe_mean(col: str) -> float | None:
+        if col not in df.columns:
+            return None
+        val = df[col].dropna().mean()
+        return round(float(val), 2) if not np.isnan(val) else None
+
+    avg_success = _safe_mean(COL_SUCCESS)
+
+    avg_cost = _safe_mean(COL_COST)
+
+    # Prefer explicit Scientific Yield column; fall back to Mission Success
+    avg_yield = _safe_mean(COL_YIELD) if COL_YIELD in df.columns else avg_success
+
+    return KPIResponse(
+        total_missions=total_missions,
+        avg_success_rate=avg_success,
+        avg_mission_cost=avg_cost,
+        avg_scientific_yield=avg_yield,
+    )
+
+
+@app.get(
+    "/data/charts",
+    response_model=ChartsResponse,
+    summary="Chart datasets from the CSV dataset",
+)
+def get_charts() -> ChartsResponse:
+    """
+    Return four chart-ready datasets derived from the cleaned CSV:
+
+    * **missions_over_time** – mission count grouped by launch year.
+    * **top_launch_vehicles** – top 5 vehicles by launch count.
+    * **mission_type_distribution** – mission count by mission type.
+    * **cost_vs_yield** – scatter points of cost (B USD) vs yield/success (%).
+    """
+    df: pd.DataFrame = app_state.get("df", pd.DataFrame())
+
+    if df.empty:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Dataset not available. "
+                f"Ensure '{CSV_PATH}' exists and is readable."
+            ),
+        )
+
+    # ── missions over time ────────────────────────────────────────────────────
+    missions_over_time: list[MissionsOverTimePoint] = []
+    if "Year" in df.columns:
+        by_year = (
+            df.dropna(subset=["Year"])
+            .groupby("Year")
+            .size()
+            .reset_index(name="missions")
+            .sort_values("Year")
+        )
+        missions_over_time = [
+            MissionsOverTimePoint(year=int(row["Year"]), missions=int(row["missions"]))
+            for _, row in by_year.iterrows()
+        ]
+
+    # ── top launch vehicles ───────────────────────────────────────────────────
+    top_launch_vehicles: list[LaunchVehiclePoint] = []
+    if COL_VEHICLE in df.columns:
+        counts = df[COL_VEHICLE].dropna().value_counts().head(5)
+        top_launch_vehicles = [
+            LaunchVehiclePoint(vehicle=str(vehicle), launches=int(count))
+            for vehicle, count in counts.items()
+        ]
+
+    # ── mission type distribution ─────────────────────────────────────────────
+    mission_type_distribution: list[MissionTypePoint] = []
+    if COL_MISSION_TYPE in df.columns:
+        counts = df[COL_MISSION_TYPE].dropna().value_counts()
+        mission_type_distribution = [
+            MissionTypePoint(name=str(name), value=int(count))
+            for name, count in counts.items()
+        ]
+
+    # ── cost vs yield scatter ─────────────────────────────────────────────────
+    cost_vs_yield: list[CostYieldPoint] = []
+    if COL_COST in df.columns:
+        yield_col = COL_YIELD if COL_YIELD in df.columns else COL_SUCCESS
+        if yield_col in df.columns:
+            scatter_df = df[[COL_COST, yield_col]].dropna()
+            cost_vs_yield = [
+                CostYieldPoint(cost=round(float(row[COL_COST]), 2), yield_=round(float(row[yield_col]), 2))
+                for _, row in scatter_df.iterrows()
+            ]
+
+    return ChartsResponse(
+        missions_over_time=missions_over_time,
+        top_launch_vehicles=top_launch_vehicles,
+        mission_type_distribution=mission_type_distribution,
+        cost_vs_yield=cost_vs_yield,
+    )
