@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 
 import joblib
 import numpy as np
+import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -34,12 +35,12 @@ ALLOWED_ORIGINS: list[str] = (
 
 # Ordered to match the training feature matrix
 FEATURE_ORDER = [
-    "mission_cost",
-    "fuel_consumption",
-    "payload_weight",
-    "crew_size",
-    "mission_duration",
-    "distance",
+    "Mission Cost (billion USD)",
+    "Fuel Consumption (tons)",
+    "Payload Weight (tons)",
+    "Crew Size",
+    "Mission Duration (years)",
+    "Distance from Earth (light-years)",
 ]
 
 # ─────────────────────────────────────────────
@@ -173,9 +174,17 @@ def predict(payload: MissionInput) -> PredictionResponse:
     if model is None:
         raise HTTPException(status_code=503, detail="Model is not loaded.")
 
-    # Build feature array in the same order used during training
-    features = np.array(
-        [[getattr(payload, f) for f in FEATURE_ORDER]], dtype=float
+    # Build a named DataFrame so the scaler does not raise feature-name warnings
+    features = pd.DataFrame(
+        [[
+            payload.mission_cost,
+            payload.fuel_consumption,
+            payload.payload_weight,
+            payload.crew_size,
+            payload.mission_duration,
+            payload.distance,
+        ]],
+        columns=FEATURE_ORDER,
     )
 
     # Apply scaler if it was saved during training

@@ -16,6 +16,8 @@ Steps:
 
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")  # non-interactive backend for headless/server environments
 import matplotlib.pyplot as plt
 import joblib
 
@@ -180,7 +182,7 @@ def plot_feature_importance(rf_model, feature_names: list):
     )
     plt.tight_layout()
     plt.savefig("feature_importance.png", dpi=150)
-    plt.show()
+    plt.close()
     print("Feature importance plot saved as 'feature_importance.png'")
 
 
@@ -196,7 +198,7 @@ def main():
     # Feature / target split
     X, y = select_features(df)
 
-    # Train / test split (80 / 20)
+    # Train / test split (80/20)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
