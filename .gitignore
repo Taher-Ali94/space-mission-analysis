@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+*.png
+scaler.pkl
+best_model.pkl
+feature_importance.png
