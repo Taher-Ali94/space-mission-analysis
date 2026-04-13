@@ -13,7 +13,6 @@ Run locally:
 
 import os
 from contextlib import asynccontextmanager
-from typing import Optional
 
 import joblib
 import numpy as np
@@ -50,8 +49,7 @@ FEATURE_ORDER = [
 # CSV column names used by the data endpoints
 COL_SUCCESS = "Mission Success (%)"
 COL_COST = "Mission Cost (billion USD)"
-COL_YIELD = "Scientific Yield (%)"   # optional – falls back to COL_SUCCESS
-COL_LAUNCH_DATE = "Launch Date"
+COL_YIELD = "Scientific Yield (points)"  # optional – falls back to COL_SUCCESS
 COL_VEHICLE = "Launch Vehicle"
 COL_MISSION_TYPE = "Mission Type"
 
@@ -62,7 +60,8 @@ def _load_csv(path: str) -> pd.DataFrame:
     Parsing is kept lightweight:
     * Numeric columns: missing values filled with the column median.
     * Categorical columns: missing values filled with the column mode.
-    * Launch Date parsed to datetime; a ``Year`` integer column is extracted.
+    * The CSV already contains a pre-computed ``Year`` integer column;
+      no date parsing is required.
 
     Returns an empty DataFrame if the file is missing or unreadable.
     """
@@ -85,11 +84,6 @@ def _load_csv(path: str) -> pd.DataFrame:
         mode_vals = df[col].mode()
         if not mode_vals.empty:
             df[col] = df[col].fillna(mode_vals[0])
-
-    # Parse launch date and extract year
-    if COL_LAUNCH_DATE in df.columns:
-        df[COL_LAUNCH_DATE] = pd.to_datetime(df[COL_LAUNCH_DATE], errors="coerce")
-        df["Year"] = df[COL_LAUNCH_DATE].dt.year.astype("Int64")
 
     print(f"CSV loaded from '{path}': {df.shape[0]} rows, {df.shape[1]} columns")
     return df
@@ -200,14 +194,14 @@ class KPIResponse(BaseModel):
     """KPI summary computed from the cleaned CSV dataset."""
 
     total_missions: int = Field(..., description="Total number of missions in the dataset")
-    avg_success_rate: Optional[float] = Field(
+    avg_success_rate: float | None = Field(
         None, description="Average mission success rate (%)"
     )
-    avg_mission_cost: Optional[float] = Field(
+    avg_mission_cost: float | None = Field(
         None, description="Average mission cost (billion USD)"
     )
-    avg_scientific_yield: Optional[float] = Field(
-        None, description="Average scientific yield (%). Uses Mission Success % when Scientific Yield % is absent."
+    avg_scientific_yield: float | None = Field(
+        None, description="Average scientific yield (points). Falls back to avg_success_rate when Scientific Yield (points) column is absent."
     )
 
 
@@ -324,7 +318,7 @@ def get_kpis() -> KPIResponse:
     * **total_missions** – row count.
     * **avg_success_rate** – mean of ``Mission Success (%)``.
     * **avg_mission_cost** – mean of ``Mission Cost (billion USD)``.
-    * **avg_scientific_yield** – mean of ``Scientific Yield (%)``; falls back to
+    * **avg_scientific_yield** – mean of ``Scientific Yield (points)``; falls back to
       ``Mission Success (%)`` when that column is absent.
     """
     df: pd.DataFrame = app_state.get("df", pd.DataFrame())
@@ -340,7 +334,7 @@ def get_kpis() -> KPIResponse:
 
     total_missions: int = len(df)
 
-    def _safe_mean(col: str) -> Optional[float]:
+    def _safe_mean(col: str) -> float | None:
         if col not in df.columns:
             return None
         val = df[col].dropna().mean()
