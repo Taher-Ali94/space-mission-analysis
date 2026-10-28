@@ -12,7 +12,8 @@ export default {
     },
     extend: {
       fontFamily: {
-        sans: ["Inter", "sans-serif"],
+        sans: ['"IBM Plex Sans Variable"', '"IBM Plex Sans"', "system-ui", "sans-serif"],
+        display: ['"Unbounded Variable"', '"Unbounded"', "system-ui", "sans-serif"],
       },
       colors: {
         border: "hsl(var(--border))",
@@ -48,15 +49,15 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
-        neon: {
-          blue: "hsl(var(--neon-blue))",
-          purple: "hsl(var(--neon-purple))",
-          cyan: "hsl(var(--neon-cyan))",
-        },
-        space: {
-          dark: "hsl(var(--space-dark))",
-          navy: "hsl(var(--space-navy))",
-        },
+        night: "hsl(var(--night))",
+        panel: "hsl(var(--panel))",
+        line: { DEFAULT: "hsl(var(--line))", strong: "hsl(var(--line-strong))" },
+        ink: { DEFAULT: "hsl(var(--ink))", muted: "hsl(var(--ink-muted))" },
+        flame: "hsl(var(--flame))",
+        plasma: "hsl(var(--plasma))",
+        go: "hsl(var(--go))",
+        hold: "hsl(var(--hold))",
+        abort: "hsl(var(--abort))",
       },
       borderRadius: {
         lg: "var(--radius)",
@@ -72,15 +73,10 @@ export default {
           from: { height: "var(--radix-accordion-content-height)" },
           to: { height: "0" },
         },
-        "fade-in": {
-          "0%": { opacity: "0", transform: "translateY(20px)" },
-          "100%": { opacity: "1", transform: "translateY(0)" },
-        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
-        "fade-in": "fade-in 0.6s ease-out forwards",
       },
     },
   },
