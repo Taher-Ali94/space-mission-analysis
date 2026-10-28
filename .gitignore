@@ -4,6 +4,5 @@ __pycache__/
 *.pyd
 *.pkl
 *.png
-scaler.pkl
-best_model.pkl
+model.pkl
 feature_importance.png

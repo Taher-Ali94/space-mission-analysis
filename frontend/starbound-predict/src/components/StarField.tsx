@@ -16,7 +16,8 @@ const StarField = () => {
     resize();
     window.addEventListener("resize", resize);
 
-    const stars = Array.from({ length: 200 }, () => ({
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const stars = Array.from({ length: 220 }, () => ({
       x: Math.random() * canvas.width,
       y: Math.random() * canvas.height,
       r: Math.random() * 1.5 + 0.5,
@@ -29,13 +30,13 @@ const StarField = () => {
     const draw = (time: number) => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       stars.forEach((s) => {
-        const twinkle = 0.4 + 0.6 * Math.sin(time * 0.001 * s.speed * 5 + s.phase);
+        const twinkle = reduce ? 0.7 : 0.4 + 0.6 * Math.sin(time * 0.001 * s.speed * 5 + s.phase);
         ctx.beginPath();
         ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(180, 210, 255, ${twinkle * 0.8})`;
+        ctx.fillStyle = `rgba(214, 226, 255, ${twinkle * 0.75})`;
         ctx.fill();
       });
-      animId = requestAnimationFrame(draw);
+      if (!reduce) animId = requestAnimationFrame(draw);
     };
     animId = requestAnimationFrame(draw);
 

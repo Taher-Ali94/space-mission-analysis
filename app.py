@@ -3,11 +3,13 @@ FastAPI Backend – Space Mission Success Prediction
 
 Endpoints:
   GET  /             → API health / status
+  GET  /model        → info about the single trained model (metrics, importances, input ranges)
   POST /predict      → accepts mission parameters, returns predicted success %
   GET  /data/kpis    → KPI summaries derived from the cleaned CSV dataset
   GET  /data/charts  → Chart-ready datasets derived from the cleaned CSV dataset
 
 Run locally:
+  python ml_pipeline.py      # trains the Random Forest and writes model.pkl
   uvicorn app:app --reload
 """
 
@@ -25,8 +27,7 @@ from pydantic import BaseModel, Field
 # CONSTANTS
 # ─────────────────────────────────────────────
 
-MODEL_PATH = os.getenv("MODEL_PATH", "best_model.pkl")
-SCALER_PATH = os.getenv("SCALER_PATH", "scaler.pkl")
+MODEL_PATH = os.getenv("MODEL_PATH", "model.pkl")
 CSV_PATH = os.getenv("CSV_PATH", "cleaned_space_missions.csv")
 
 # Comma-separated list of allowed CORS origins.
@@ -44,6 +45,16 @@ FEATURE_ORDER = [
     "Crew Size",
     "Mission Duration (years)",
     "Distance from Earth (light-years)",
+]
+
+# /predict field name for each training column (same order as FEATURE_ORDER)
+FEATURE_KEYS = [
+    "mission_cost",
+    "fuel_consumption",
+    "payload_weight",
+    "crew_size",
+    "mission_duration",
+    "distance",
 ]
 
 # CSV column names used by the data endpoints
@@ -97,25 +108,26 @@ app_state: dict = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load the model, scaler, and CSV dataset once at startup."""
+    """Load the model bundle and CSV dataset once at startup."""
     if not os.path.exists(MODEL_PATH):
         raise RuntimeError(
             f"Model file '{MODEL_PATH}' not found. "
             "Run ml_pipeline.py first to train and save the model."
         )
 
-    app_state["model"] = joblib.load(MODEL_PATH)
-
-    # Scaler is optional – training may not have produced one
-    if os.path.exists(SCALER_PATH):
-        app_state["scaler"] = joblib.load(SCALER_PATH)
-    else:
-        app_state["scaler"] = None
+    bundle = joblib.load(MODEL_PATH)
+    if not isinstance(bundle, dict) or "model" not in bundle:
+        raise RuntimeError(
+            f"'{MODEL_PATH}' is not a model bundle from ml_pipeline.py. "
+            "Re-run ml_pipeline.py to regenerate it."
+        )
+    app_state["model"] = bundle["model"]
+    app_state["bundle"] = bundle
 
     # CSV is optional – data endpoints degrade gracefully when absent
     app_state["df"] = _load_csv(CSV_PATH)
 
-    print(f"Model loaded from '{MODEL_PATH}'")
+    print(f"Model loaded from '{MODEL_PATH}' ({bundle.get('model_name', 'unknown')})")
     yield
     app_state.clear()
 
@@ -152,8 +164,8 @@ app.add_middleware(
 class MissionInput(BaseModel):
     """Input parameters for a space mission."""
 
-    mission_cost: float = Field(..., gt=0, description="Mission cost in billion USD")
-    fuel_consumption: float = Field(..., gt=0, description="Fuel consumption in tons")
+    mission_cost: float = Field(..., ge=0, description="Mission cost in billion USD")
+    fuel_consumption: float = Field(..., ge=0, description="Fuel consumption in tons")
     payload_weight: float = Field(..., gt=0, description="Payload weight in tons")
     crew_size: int = Field(..., ge=0, description="Number of crew members")
     mission_duration: float = Field(..., gt=0, description="Mission duration in years")
@@ -162,12 +174,12 @@ class MissionInput(BaseModel):
     model_config = {
         "json_schema_extra": {
             "example": {
-                "mission_cost": 5.0,
-                "fuel_consumption": 200.0,
+                "mission_cost": 0.5,
+                "fuel_consumption": 0.5,
                 "payload_weight": 50.0,
-                "crew_size": 4,
-                "mission_duration": 2.5,
-                "distance": 0.5,
+                "crew_size": 50,
+                "mission_duration": 16.0,
+                "distance": 26.0,
             }
         }
     }
@@ -180,6 +192,7 @@ class PredictionResponse(BaseModel):
         ..., description="Predicted mission success percentage (0–100)"
     )
     status: str = Field(default="success")
+    model_name: str = Field(..., description="Name of the model that produced the prediction")
 
 
 class StatusResponse(BaseModel):
@@ -188,6 +201,26 @@ class StatusResponse(BaseModel):
     status: str
     model_loaded: bool
     message: str
+
+
+class FeatureInfo(BaseModel):
+    key: str = Field(..., description="Field name used by /predict")
+    column: str = Field(..., description="Column name in the dataset")
+    importance: float
+    min: float
+    max: float
+    median: float
+
+
+class ModelInfoResponse(BaseModel):
+    """Information about the single trained model."""
+
+    model_name: str
+    target: str
+    n_samples: int
+    trained_at: str | None = None
+    metrics: dict[str, float]
+    features: list[FeatureInfo]
 
 
 class KPIResponse(BaseModel):
@@ -270,17 +303,12 @@ def root() -> StatusResponse:
     summary="Predict mission success %",
 )
 def predict(payload: MissionInput) -> PredictionResponse:
-    """
-    Accept mission parameters and return the predicted success percentage.
-
-    The input values are scaled with the same scaler used during training
-    (if available) before being passed to the model.
-    """
+    """Accept mission parameters and return the predicted success percentage."""
     model = app_state.get("model")
     if model is None:
         raise HTTPException(status_code=503, detail="Model is not loaded.")
 
-    # Build a named DataFrame so the scaler does not raise feature-name warnings
+    # Build a named DataFrame so the model sees the same column names as in training
     features = pd.DataFrame(
         [[
             payload.mission_cost,
@@ -293,17 +321,45 @@ def predict(payload: MissionInput) -> PredictionResponse:
         columns=FEATURE_ORDER,
     )
 
-    # Apply scaler if it was saved during training
-    scaler = app_state.get("scaler")
-    if scaler is not None:
-        features = scaler.transform(features)
-
     prediction: float = float(model.predict(features)[0])
 
     # Clamp to a sensible [0, 100] range
     prediction = max(0.0, min(100.0, prediction))
 
-    return PredictionResponse(predicted_success_percent=round(prediction, 2))
+    return PredictionResponse(
+        predicted_success_percent=round(prediction, 2),
+        model_name=app_state["bundle"].get("model_name", "model"),
+    )
+
+
+@app.get("/model", response_model=ModelInfoResponse, summary="Info about the trained model")
+def model_info() -> ModelInfoResponse:
+    """Return the model name, hold-out metrics, feature importances and input ranges."""
+    bundle = app_state.get("bundle")
+    if bundle is None:
+        raise HTTPException(status_code=503, detail="Model is not loaded.")
+
+    importances = bundle.get("feature_importances", {})
+    ranges = bundle.get("feature_ranges", {})
+    features = [
+        FeatureInfo(
+            key=key,
+            column=col,
+            importance=importances.get(col, 0.0),
+            min=ranges.get(col, {}).get("min", 0.0),
+            max=ranges.get(col, {}).get("max", 0.0),
+            median=ranges.get(col, {}).get("median", 0.0),
+        )
+        for key, col in zip(FEATURE_KEYS, FEATURE_ORDER)
+    ]
+    return ModelInfoResponse(
+        model_name=bundle.get("model_name", "model"),
+        target=bundle.get("target", COL_SUCCESS),
+        n_samples=bundle.get("n_samples", 0),
+        trained_at=bundle.get("trained_at"),
+        metrics=bundle.get("metrics", {}),
+        features=features,
+    )
 
 
 @app.get(

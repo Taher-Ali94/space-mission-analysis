@@ -1,100 +1,54 @@
 import { useQuery } from "@tanstack/react-query";
-import { Rocket, Target, DollarSign, FlaskConical } from "lucide-react";
+import CountUp from "@/components/CountUp";
+import { fetchKPIs, type KPIData } from "@/lib/api";
 
-const API_BASE = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
-
-// Shape of the /data/kpis response
-interface KPIData {
-  total_missions: number;
-  avg_success_rate: number | null;
-  avg_mission_cost: number | null;
-  avg_scientific_yield: number | null;
+interface Readout {
+  label: string;
+  value: number | null;
+  decimals: number;
+  prefix?: string;
+  suffix?: string;
 }
 
-// Fetch KPI data from the backend
-function fetchKPIs(): Promise<KPIData> {
-  return fetch(`${API_BASE}/data/kpis`).then((r) => {
-    if (!r.ok) throw new Error("Failed to fetch KPIs");
-    return r.json();
-  });
-}
-
-// Map raw API response to display strings for each card
-function buildKPICards(data: KPIData) {
+function readouts(d?: KPIData): Readout[] {
   return [
-    {
-      label: "Total Missions",
-      value: data.total_missions.toLocaleString(),
-      icon: Rocket,
-      glow: "glow-border-blue",
-    },
-    {
-      label: "Avg Success Rate",
-      value: data.avg_success_rate != null ? `${data.avg_success_rate.toFixed(1)}%` : "—",
-      icon: Target,
-      glow: "glow-border-purple",
-    },
-    {
-      label: "Avg Mission Cost",
-      value: data.avg_mission_cost != null ? `$${data.avg_mission_cost.toFixed(2)}B` : "—",
-      icon: DollarSign,
-      glow: "glow-border-cyan",
-    },
-    {
-      label: "Scientific Yield",
-      value: data.avg_scientific_yield != null ? `${data.avg_scientific_yield.toFixed(1)} pts` : "—",
-      icon: FlaskConical,
-      glow: "glow-border-blue",
-    },
+    { label: "Missions in the dataset", value: d?.total_missions ?? null, decimals: 0 },
+    { label: "Average success rate", value: d?.avg_success_rate ?? null, decimals: 1, suffix: "%" },
+    { label: "Average cost index (0–1 scale)", value: d?.avg_mission_cost ?? null, decimals: 2 },
+    { label: "Average scientific yield", value: d?.avg_scientific_yield ?? null, decimals: 1, suffix: " pts" },
   ];
 }
 
-// Static card metadata used for placeholders (loading / error states)
-const PLACEHOLDER_CARDS = [
-  { label: "Total Missions",   icon: Rocket,       glow: "glow-border-blue"   },
-  { label: "Avg Success Rate", icon: Target,       glow: "glow-border-purple" },
-  { label: "Avg Mission Cost", icon: DollarSign,   glow: "glow-border-cyan"   },
-  { label: "Scientific Yield", icon: FlaskConical, glow: "glow-border-blue"   },
-];
-
+/** One telemetry strip rather than four separate cards. */
 const KPICards = () => {
-  const { data, isLoading, isError } = useQuery<KPIData>({
-    queryKey: ["kpis"],
-    queryFn: fetchKPIs,
-  });
-
-  const showPlaceholder = isLoading || isError || !data;
-  const kpis = showPlaceholder ? null : buildKPICards(data);
+  const { data, isLoading, isError } = useQuery({ queryKey: ["kpis"], queryFn: fetchKPIs });
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-      {showPlaceholder
-        ? PLACEHOLDER_CARDS.map((kpi, i) => (
-            <div
-              key={kpi.label}
-              className={`relative rounded-xl border bg-card p-6 transition-all duration-300 hover:scale-105 hover:brightness-110 ${kpi.glow}`}
-              style={{ animationDelay: `${i * 0.1}s` }}
-            >
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-sm font-medium text-muted-foreground">{kpi.label}</span>
-                <kpi.icon className="h-5 w-5 text-primary" />
-              </div>
-              <p className="text-3xl font-bold gradient-text">{isLoading ? "…" : "—"}</p>
-            </div>
-          ))
-        : kpis!.map((kpi, i) => (
-            <div
-              key={kpi.label}
-              className={`relative rounded-xl border bg-card p-6 transition-all duration-300 hover:scale-105 hover:brightness-110 ${kpi.glow}`}
-              style={{ animationDelay: `${i * 0.1}s` }}
-            >
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-sm font-medium text-muted-foreground">{kpi.label}</span>
-                <kpi.icon className="h-5 w-5 text-primary" />
-              </div>
-              <p className="text-3xl font-bold gradient-text">{kpi.value}</p>
-            </div>
-          ))}
+    <div>
+      <dl className="grid grid-cols-2 overflow-hidden rounded-[var(--radius)] border border-line bg-panel/70 backdrop-blur lg:grid-cols-4">
+        {readouts(data).map((r, i) => (
+          <div
+            key={r.label}
+            className={`flex flex-col-reverse gap-2 p-6 sm:p-8 ${i % 2 === 1 ? "border-l border-line" : ""} ${
+              i >= 2 ? "border-t border-line lg:border-t-0" : ""
+            } ${i === 2 ? "lg:border-l" : ""}`}
+          >
+            <dt className="text-sm text-ink-muted">{r.label}</dt>
+            <dd className="font-display text-[clamp(1.6rem,3vw,2.5rem)] font-semibold tabular-nums tracking-tight text-ink">
+              {r.value != null ? (
+                <CountUp value={r.value} decimals={r.decimals} prefix={r.prefix} suffix={r.suffix} />
+              ) : (
+                <span className={isLoading ? "animate-pulse text-ink-muted" : "text-ink-muted"}>—</span>
+              )}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {isError && (
+        <p className="mt-4 text-sm text-abort">
+          Couldn't load the dataset figures. Start the API with <code className="text-ink">uvicorn app:app --reload</code> and refresh.
+        </p>
+      )}
     </div>
   );
 };
